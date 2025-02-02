@@ -7,3 +7,4 @@ openpyxl
 Pillow
 poppler-utils
 camelot-py[cv]
+paddleocr

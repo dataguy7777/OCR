@@ -10,6 +10,7 @@ import pytesseract
 from pytesseract import Output
 from docx import Document
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from PIL import ImageDraw  # For drawing bounding boxes
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,14 +18,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def convert_pdf_to_images(pdf_file, poppler_path=None):
     """
-    Converts a PDF file (as a BytesIO stream) into a list of image objects.
-
+    Converts a PDF file (provided as a BytesIO stream) into a list of image objects.
+    
     Args:
         pdf_file (BytesIO): The uploaded PDF file.
-            Example: st.file_uploader("Upload PDF", type=["pdf"]) returns a file-like object.
         poppler_path (str, optional): Path to Poppler binaries if not in PATH.
-            Example (Windows): r'C:\poppler\bin'. Defaults to None.
-
+    
     Returns:
         list: A list of PIL.Image objects (one per page).
     """
@@ -43,11 +42,10 @@ def convert_pdf_to_images(pdf_file, poppler_path=None):
 def extract_text_from_images(images):
     """
     Extracts text from a list of image objects using Tesseract OCR.
-
+    
     Args:
         images (list): List of PIL.Image objects.
-            Example: [PIL.Image.Image, PIL.Image.Image, ...]
-
+    
     Returns:
         list: A list of strings (extracted text for each image).
     """
@@ -66,16 +64,14 @@ def extract_text_from_images(images):
 def create_excel_file(texts):
     """
     Creates an Excel file from a list of text strings after cleaning illegal characters.
-
+    
     Args:
         texts (list): List of extracted text strings.
-            Example: ["Page 1 text", "Page 2 text", ...]
-
+    
     Returns:
         BytesIO: In-memory Excel file ready for download.
     """
     def clean_text(text):
-        # Remove characters that Excel cannot handle.
         return re.sub(ILLEGAL_CHARACTERS_RE, "", text) if text else text
 
     cleaned_texts = [clean_text(text) for text in texts]
@@ -98,11 +94,10 @@ def create_excel_file(texts):
 def create_word_file(texts):
     """
     Creates a Word document from a list of text strings.
-
+    
     Args:
         texts (list): List of extracted text strings.
-            Example: ["Page 1 text", "Page 2 text", ...]
-
+    
     Returns:
         BytesIO: In-memory Word document ready for download.
     """
@@ -128,22 +123,19 @@ def create_word_file(texts):
 def extract_tables_from_images_with_tesseract(images):
     """
     Extracts table-like data from images using Tesseract's TSV output.
-    For each image, the Tesseract TSV (data) output is returned as a pandas DataFrame.
-    (This DataFrame includes details like bounding boxes, confidence, and recognized text.)
+    For each image, the TSV output is converted into a pandas DataFrame.
     
     Args:
         images (list): List of PIL.Image objects.
-            Example: [PIL.Image.Image, PIL.Image.Image, ...]
-
+    
     Returns:
         list: A list of pandas DataFrames, one per image (page).
     """
     tables = []
     for idx, image in enumerate(images, start=1):
         try:
-            # Get the OCR data as a DataFrame
             df = pytesseract.image_to_data(image, output_type=Output.DATAFRAME)
-            # Optionally filter out rows with empty text
+            # Filter out rows with empty text
             df = df[df['text'].notna() & (df['text'] != "")]
             logging.info("Extracted TSV data for page %d with %d rows.", idx, len(df))
             tables.append(df)
@@ -152,10 +144,35 @@ def extract_tables_from_images_with_tesseract(images):
     return tables
 
 
+def draw_bounding_boxes_on_image(image, conf_threshold=60):
+    """
+    Draws red bounding boxes on the image around detected text regions.
+    
+    Args:
+        image (PIL.Image): The input image.
+        conf_threshold (int): Confidence threshold for drawing boxes.
+    
+    Returns:
+        PIL.Image: Image with red bounding boxes drawn.
+    """
+    draw = ImageDraw.Draw(image)
+    data = pytesseract.image_to_data(image, output_type=Output.DICT)
+    n_boxes = len(data['level'])
+    for i in range(n_boxes):
+        try:
+            conf = int(data['conf'][i])
+        except ValueError:
+            conf = 0
+        if conf > conf_threshold:
+            x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+            draw.rectangle([x, y, x + w, y + h], outline="red", width=2)
+    return image
+
+
 # --- Streamlit User Interface ---
 
 st.title("PDF Converter & Table Extractor (Tesseract)")
-st.write("Upload a scanned PDF and select an export option.")
+st.write("Upload a scanned PDF and preview detected content with red bounding boxes before export.")
 
 # File uploader accepts only PDF files.
 uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
@@ -163,7 +180,7 @@ uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
 # Radio button to select export format.
 export_format = st.radio("Select Export Format", ("Excel", "Word", "Tables (Tesseract)"))
 
-# Optional: Specify the Poppler path if needed (e.g., on Windows, set to r'C:\poppler\bin').
+# Optional: Specify Poppler path if needed (e.g., on Windows, set to r'C:\poppler\bin').
 poppler_path = None
 
 if uploaded_pdf is not None:
@@ -174,6 +191,12 @@ if uploaded_pdf is not None:
     if not images:
         st.error("No images found in the PDF file. Check if the PDF is valid.")
     else:
+        # Show preview of detected content with red bounding boxes
+        with st.expander("Preview Detected Content with Red Bounding Boxes"):
+            for idx, img in enumerate(images, start=1):
+                preview_img = draw_bounding_boxes_on_image(img.copy())
+                st.image(preview_img, caption=f"Page {idx}", use_column_width=True)
+        
         if export_format == "Tables (Tesseract)":
             with st.spinner("Extracting table data via Tesseract TSV output..."):
                 table_dfs = extract_tables_from_images_with_tesseract(images)

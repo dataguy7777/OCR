@@ -6,3 +6,4 @@ pandas
 openpyxl
 Pillow
 paddleocr
+paddlepaddle-cpu

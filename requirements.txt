@@ -5,5 +5,3 @@ python-docx
 pandas
 openpyxl
 Pillow
-paddleocr==2.9.1
-paddlepaddle-cpu==2.5.2

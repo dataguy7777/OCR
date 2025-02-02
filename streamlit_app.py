@@ -256,11 +256,13 @@ if uploaded_pdf is not None:
                     mime="application/pdf"
                 )
                 try:
-                    # Embed the PDF using an iframe.
+                    import base64
                     b64_pdf = base64.b64encode(ocr_pdf).decode("utf-8")
-                    pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="700" height="900"></iframe>'
+                    # Using an <object> tag instead of <iframe>
+                    pdf_display = f'<object data="data:application/pdf;base64,{b64_pdf}" type="application/pdf" width="700" height="900"></object>'
                     st.markdown(pdf_display, unsafe_allow_html=True)
                 except Exception as e:
                     st.info("PDF preview embedding not available; please download the file.")
             else:
                 st.error("OCRmyPDF processing failed.")
+

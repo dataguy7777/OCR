@@ -2,13 +2,13 @@ import streamlit as st
 import logging
 import io
 import re
-import tempfile
 import pandas as pd
+import tempfile
+
 from pdf2image import convert_from_bytes
 import pytesseract
 from docx import Document
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
-import camelot
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,12 +16,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def convert_pdf_to_images(pdf_file, poppler_path=None):
     """
-    Converts a PDF file (as a BytesIO stream) into a list of image objects.
+    Converts a PDF file (provided as a BytesIO stream) into a list of image objects.
 
     Args:
         pdf_file (BytesIO): The uploaded PDF file.
             Example: st.file_uploader("Upload PDF", type=["pdf"]) returns a file-like object.
-        poppler_path (str, optional): Path to Poppler binaries if not in PATH. Defaults to None.
+        poppler_path (str, optional): Path to Poppler binaries if not in PATH.
+            Example (Windows): r'C:\poppler\bin'. Defaults to None.
 
     Returns:
         list: A list of PIL.Image objects (one per page).
@@ -44,7 +45,7 @@ def extract_text_from_images(images):
     Extracts text from a list of image objects using Tesseract OCR.
 
     Args:
-        images (list): List of image objects.
+        images (list): List of PIL.Image objects.
             Example: [PIL.Image.Image, PIL.Image.Image, ...]
 
     Returns:
@@ -125,36 +126,48 @@ def create_word_file(texts):
     return output
 
 
-def extract_tables_from_pdf(pdf_file):
+def extract_tables_from_images_with_paddle(images):
     """
-    Extracts tables from a PDF file using Camelot.
+    Extracts tables from a list of images using PaddleOCR's PP-Structure TableSystem.
 
     Args:
-        pdf_file (file-like): The uploaded PDF file.
-            Example: st.file_uploader("Upload PDF", type=["pdf"]) returns a file-like object.
+        images (list): List of PIL.Image objects.
+            Example: [PIL.Image.Image, PIL.Image.Image, ...]
 
     Returns:
         list: A list of pandas DataFrames, each representing an extracted table.
     """
     try:
-        # Save the uploaded PDF to a temporary file because Camelot requires a file path.
-        pdf_file.seek(0)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            tmp.write(pdf_file.read())
-            tmp_path = tmp.name
-        tables = camelot.read_pdf(tmp_path, pages='all')
-        dataframes = [table.df for table in tables]
-        logging.info("Extracted %d table(s) from PDF.", len(dataframes))
-        return dataframes
-    except Exception as e:
-        logging.error("Error extracting tables from PDF: %s", e)
-        st.error("Failed to extract tables from PDF. Ensure the PDF has extractable (digital) text.")
+        from ppstructure.table import TableSystem
+    except ImportError:
+        st.error("PaddleOCR PP-Structure module not found. Please ensure 'paddleocr' is installed.")
         return []
+
+    table_system = TableSystem()
+    all_tables = []
+    for idx, image in enumerate(images, start=1):
+        try:
+            result = table_system(image)
+            # Depending on the PP-Structure version, the result may be a dict with a 'result' key or a list.
+            if isinstance(result, dict) and 'result' in result:
+                tables_in_page = result['result']
+            elif isinstance(result, list):
+                tables_in_page = result
+            else:
+                tables_in_page = []
+            for table in tables_in_page:
+                # Assume each table is represented as a list of rows, where each row is a list of cell texts.
+                df = pd.DataFrame(table)
+                all_tables.append(df)
+            logging.info("Extracted %d table(s) from page %d using PaddleOCR.", len(tables_in_page), idx)
+        except Exception as e:
+            logging.error("Error extracting tables from page %d: %s", idx, e)
+    return all_tables
 
 
 # --- Streamlit User Interface ---
 
-st.title("PDF Converter & Table Extractor")
+st.title("PDF Converter & Table Extractor (PaddleOCR)")
 st.write("Upload a PDF and select an export option.")
 
 # File uploader accepts only PDF files.
@@ -163,28 +176,32 @@ uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
 # Radio button to select export format.
 export_format = st.radio("Select Export Format", ("Excel", "Word", "Tables"))
 
-# Optional: Specify Poppler path if needed (e.g., on Windows).
-poppler_path = None  # Set to None if Poppler is already in PATH
+# Optional: Specify Poppler path if needed (e.g., on Windows, set to r'C:\poppler\bin').
+poppler_path = None
 
 if uploaded_pdf is not None:
     if export_format == "Tables":
-        # Table extraction requires the original PDF file.
-        with st.spinner("Extracting tables from PDF..."):
-            tables = extract_tables_from_pdf(uploaded_pdf)
-        if tables:
-            st.success(f"Extracted {len(tables)} table(s) from the PDF.")
-            for idx, table in enumerate(tables, start=1):
-                st.write(f"### Table {idx}")
-                st.dataframe(table)
-                csv_data = table.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label=f"Download Table {idx} as CSV",
-                    data=csv_data,
-                    file_name=f"table_{idx}.csv",
-                    mime="text/csv"
-                )
-        else:
-            st.error("No tables extracted from the PDF. Ensure the PDF has digital text tables.")
+        with st.spinner("Extracting tables from PDF using PaddleOCR..."):
+            # Convert PDF pages to images.
+            images = convert_pdf_to_images(uploaded_pdf, poppler_path=poppler_path)
+            if images:
+                tables = extract_tables_from_images_with_paddle(images)
+                if tables:
+                    st.success(f"Extracted {len(tables)} table(s) from the PDF.")
+                    for idx, table in enumerate(tables, start=1):
+                        st.write(f"### Table {idx}")
+                        st.dataframe(table)
+                        csv_data = table.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label=f"Download Table {idx} as CSV",
+                            data=csv_data,
+                            file_name=f"table_{idx}.csv",
+                            mime="text/csv"
+                        )
+                else:
+                    st.error("No tables extracted from the PDF using PaddleOCR.")
+            else:
+                st.error("No images found in the PDF file. Check if the PDF is valid.")
     else:
         with st.spinner("Processing PDF for OCR extraction..."):
             images = convert_pdf_to_images(uploaded_pdf, poppler_path=poppler_path)

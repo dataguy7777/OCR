@@ -134,12 +134,12 @@ def draw_bounding_boxes_on_image(image, conf_threshold=60):
 
 def process_pdf_with_ocrmypdf(pdf_file):
     """
-    Processes the PDF with OCRmyPDF (adds an OCR text layer to make it searchable).
-    Uses subprocess to call the 'ocrmypdf' command.
-    Returns the processed PDF as bytes.
+    Processes the PDF with OCRmyPDF to add an OCR text layer (making it searchable).
+    Uses subprocess to call the 'ocrmypdf' command with the --skip-unpaper flag.
+    Returns the processed PDF as bytes, or None if processing fails.
     """
     try:
-        # Write the uploaded PDF to a temporary input file.
+        # Save the uploaded PDF to a temporary input file.
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_in:
             temp_in.write(pdf_file.read())
             in_path = temp_in.name
@@ -148,8 +148,8 @@ def process_pdf_with_ocrmypdf(pdf_file):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_out:
             out_path = temp_out.name
 
-        # Run the OCRmyPDF command.
-        result = subprocess.run(["ocrmypdf", in_path, out_path],
+        # Run OCRmyPDF with --skip-unpaper to avoid unpaper-related issues.
+        result = subprocess.run(["ocrmypdf", "--skip-unpaper", in_path, out_path],
                                 capture_output=True, text=True, check=True)
         logging.info("OCRmyPDF output: %s", result.stdout)
 
@@ -157,6 +157,10 @@ def process_pdf_with_ocrmypdf(pdf_file):
         with open(out_path, "rb") as f:
             processed_pdf = f.read()
         return processed_pdf
+    except subprocess.CalledProcessError as e:
+        logging.error("OCRmyPDF failed with error: %s", e.stderr)
+        st.error("OCRmyPDF processing failed: " + e.stderr)
+        return None
     except Exception as e:
         logging.error("Error running OCRmyPDF: %s", e)
         st.error("Failed to process PDF with OCRmyPDF.")
@@ -165,8 +169,8 @@ def process_pdf_with_ocrmypdf(pdf_file):
 
 # --- Streamlit User Interface ---
 
-st.title("PDF Converter & Table Extractor (Tesseract & OCRmyPDF)")
-st.write("Upload a scanned PDF. Two output tabs will be available: one showing detected content with red bounding boxes and export options, and another showing an OCR-enhanced (searchable) PDF produced by OCRmyPDF.")
+st.title("PDF Converter & Table Extractor")
+st.write("Upload a scanned PDF. Two output tabs are available: one showing detected content with red bounding boxes (with export options) and another showing an OCR-enhanced searchable PDF produced by OCRmyPDF.")
 
 # File uploader (PDF only)
 uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
@@ -180,7 +184,7 @@ if uploaded_pdf is not None:
     pdf_for_images = io.BytesIO(file_bytes)
     pdf_for_ocr = io.BytesIO(file_bytes)
 
-    with st.spinner("Processing PDF..."):
+    with st.spinner("Converting PDF pages to images..."):
         images = convert_pdf_to_images(pdf_for_images, poppler_path=poppler_path)
     if not images:
         st.error("No images found in the PDF file. Check if the PDF is valid.")
@@ -189,7 +193,7 @@ if uploaded_pdf is not None:
         with st.spinner("Running OCRmyPDF on the uploaded PDF..."):
             ocr_pdf = process_pdf_with_ocrmypdf(pdf_for_ocr)
 
-        # Create two output tabs
+        # Create two output tabs.
         tabs = st.tabs(["Detected Content", "OCRmyPDF Output"])
 
         with tabs[0]:
@@ -199,7 +203,6 @@ if uploaded_pdf is not None:
                     preview_img = draw_bounding_boxes_on_image(img.copy())
                     st.image(preview_img, caption=f"Page {idx}", use_column_width=True)
 
-            # Export options for OCR text or table TSV extraction
             export_format = st.radio("Select Export Format", ("Excel", "Word", "Tables (Tesseract)"))
             if export_format == "Tables (Tesseract)":
                 with st.spinner("Extracting table data via Tesseract TSV output..."):
@@ -249,15 +252,13 @@ if uploaded_pdf is not None:
                     file_name="ocr_processed.pdf",
                     mime="application/pdf"
                 )
-                # Optionally, embed the PDF (if your Streamlit version supports it)
                 try:
-                    # Embed PDF using an iframe via components.html
-                    pdf_base64 = io.BytesIO(ocr_pdf).getvalue().hex()
-                    st.markdown(
-                        f'<iframe src="data:application/pdf;base64,{ocr_pdf.decode("latin1")}" width="700" height="900"></iframe>',
-                        unsafe_allow_html=True,
-                    )
+                    # Embed the PDF using an iframe (if supported)
+                    import base64
+                    b64_pdf = base64.b64encode(ocr_pdf).decode("utf-8")
+                    pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="700" height="900"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
                 except Exception as e:
-                    st.info("Preview embedding not available; please download the file.")
+                    st.info("PDF preview embedding not available; please download the file.")
             else:
                 st.error("OCRmyPDF processing failed.")

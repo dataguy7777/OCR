@@ -6,6 +6,7 @@ import pandas as pd
 import tempfile
 import subprocess
 import base64
+import llama_index
 
 from pdf2image import convert_from_bytes
 import pytesseract
@@ -13,7 +14,7 @@ from pytesseract import Output
 from docx import Document
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from PIL import Image, ImageDraw
-
+from llama_index import RecursiveCharacterTextSplitter
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

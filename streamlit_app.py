@@ -26,7 +26,6 @@ def convert_pdf_to_images(pdf_file, poppler_path=None):
 
     Returns:
         list: A list of PIL.Image objects (one per page).
-            Example: [PIL.Image.Image, PIL.Image.Image, ...]
     """
     try:
         pdf_file.seek(0)
@@ -50,7 +49,6 @@ def extract_text_from_images(images):
 
     Returns:
         list: A list of strings (extracted text for each image).
-            Example: ["Text from page 1", "Text from page 2", ...]
     """
     texts = []
     for idx, image in enumerate(images, start=1):
@@ -70,7 +68,6 @@ def create_excel_file(texts):
 
     Args:
         texts (list): List of extracted text strings.
-            Example: ["Page 1 text", "Page 2 text", ...]
 
     Returns:
         BytesIO: In-memory Excel file ready for download.
@@ -102,7 +99,6 @@ def create_word_file(texts):
 
     Args:
         texts (list): List of extracted text strings.
-            Example: ["Page 1 text", "Page 2 text", ...]
 
     Returns:
         BytesIO: In-memory Word document ready for download.
@@ -128,37 +124,36 @@ def create_word_file(texts):
 
 def extract_tables_from_images_with_paddle(images):
     """
-    Extracts tables from a list of images using PaddleOCR's PP-Structure TableSystem.
+    Extracts tables from a list of images using PaddleOCR's PP‑Structure module.
 
     Args:
         images (list): List of PIL.Image objects.
-            Example: [PIL.Image.Image, PIL.Image.Image, ...]
 
     Returns:
         list: A list of pandas DataFrames, each representing an extracted table.
     """
     try:
-        from ppstructure.table import TableSystem
+        from paddleocr import PPStructure
     except ImportError:
-        st.error("PaddleOCR PP-Structure module not found. Please ensure 'paddleocr' is installed.")
+        st.error("PaddleOCR PP‑Structure module not found. Ensure both 'paddleocr' and 'paddlepaddle' are installed.")
         return []
 
-    table_system = TableSystem()
+    # Initialize PP‑Structure for table extraction.
+    table_engine = PPStructure(show_log=True)
     all_tables = []
     for idx, image in enumerate(images, start=1):
         try:
-            result = table_system(image)
-            # Depending on the PP-Structure version, the result may be a dict with a 'result' key or a list.
-            if isinstance(result, dict) and 'result' in result:
-                tables_in_page = result['result']
-            elif isinstance(result, list):
-                tables_in_page = result
-            else:
-                tables_in_page = []
+            result = table_engine(image)
+            # The result is expected to be a dictionary with a "result" key containing detected tables.
+            tables_in_page = result.get("result", [])
             for table in tables_in_page:
-                # Assume each table is represented as a list of rows, where each row is a list of cell texts.
-                df = pd.DataFrame(table)
-                all_tables.append(df)
+                if "structure_result" in table:
+                    # Convert the structure result (list of rows) into a DataFrame.
+                    df = pd.DataFrame(table["structure_result"])
+                    all_tables.append(df)
+                elif "cell" in table:
+                    df = pd.DataFrame(table["cell"])
+                    all_tables.append(df)
             logging.info("Extracted %d table(s) from page %d using PaddleOCR.", len(tables_in_page), idx)
         except Exception as e:
             logging.error("Error extracting tables from page %d: %s", idx, e)
@@ -199,7 +194,7 @@ if uploaded_pdf is not None:
                             mime="text/csv"
                         )
                 else:
-                    st.error("No tables extracted from the PDF using PaddleOCR.")
+                    st.error("No tables were extracted from the PDF using PaddleOCR.")
             else:
                 st.error("No images found in the PDF file. Check if the PDF is valid.")
     else:

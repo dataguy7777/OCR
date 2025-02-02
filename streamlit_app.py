@@ -12,6 +12,7 @@ from pytesseract import Output
 from docx import Document
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from PIL import Image, ImageDraw
+import base64
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -135,11 +136,8 @@ def draw_bounding_boxes_on_image(image, conf_threshold=60):
 def process_pdf_with_ocrmypdf(pdf_file):
     """
     Processes the PDF with OCRmyPDF to add an OCR text layer (making it searchable).
-    Uses subprocess to call the 'ocrmypdf' command.
+    Uses subprocess to call the 'ocrmypdf' command with the --force-ocr flag.
     Returns the processed PDF as bytes, or None if processing fails.
-    
-    Note: The '--skip-unpaper' flag has been removed since it is not supported
-    by your current version of OCRmyPDF.
     """
     try:
         # Write the uploaded PDF to a temporary input file.
@@ -151,9 +149,11 @@ def process_pdf_with_ocrmypdf(pdf_file):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_out:
             out_path = temp_out.name
 
-        # Run OCRmyPDF without the --skip-unpaper flag.
-        result = subprocess.run(["ocrmypdf", in_path, out_path],
-                                capture_output=True, text=True, check=True)
+        # Run OCRmyPDF with --force-ocr to force OCR even if pages already have text.
+        result = subprocess.run(
+            ["ocrmypdf", "--force-ocr", in_path, out_path],
+            capture_output=True, text=True, check=True
+        )
         logging.info("OCRmyPDF output: %s", result.stdout)
 
         # Read the processed PDF.
@@ -182,7 +182,7 @@ uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
 poppler_path = None
 
 if uploaded_pdf is not None:
-    # Read file bytes once and create separate BytesIO objects for different processing
+    # Read file bytes once and create separate BytesIO objects for different processing.
     file_bytes = uploaded_pdf.getvalue()
     pdf_for_images = io.BytesIO(file_bytes)
     pdf_for_ocr = io.BytesIO(file_bytes)
@@ -192,7 +192,7 @@ if uploaded_pdf is not None:
     if not images:
         st.error("No images found in the PDF file. Check if the PDF is valid.")
     else:
-        # Process the PDF with OCRmyPDF in parallel
+        # Process the PDF with OCRmyPDF in parallel.
         with st.spinner("Running OCRmyPDF on the uploaded PDF..."):
             ocr_pdf = process_pdf_with_ocrmypdf(pdf_for_ocr)
 
@@ -256,8 +256,7 @@ if uploaded_pdf is not None:
                     mime="application/pdf"
                 )
                 try:
-                    # Embed the PDF using an iframe (if supported)
-                    import base64
+                    # Embed the PDF using an iframe.
                     b64_pdf = base64.b64encode(ocr_pdf).decode("utf-8")
                     pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="700" height="900"></iframe>'
                     st.markdown(pdf_display, unsafe_allow_html=True)

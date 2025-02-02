@@ -7,6 +7,7 @@ import tempfile
 
 from pdf2image import convert_from_bytes
 import pytesseract
+from pytesseract import Output
 from docx import Document
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
@@ -16,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def convert_pdf_to_images(pdf_file, poppler_path=None):
     """
-    Converts a PDF file (provided as a BytesIO stream) into a list of image objects.
+    Converts a PDF file (as a BytesIO stream) into a list of image objects.
 
     Args:
         pdf_file (BytesIO): The uploaded PDF file.
@@ -58,7 +59,7 @@ def extract_text_from_images(images):
             logging.info("Extracted text from page %d.", idx)
         except Exception as e:
             logging.error("Error extracting text from page %d: %s", idx, e)
-            texts.append("")  # Append empty string if extraction fails
+            texts.append("")
     return texts
 
 
@@ -68,6 +69,7 @@ def create_excel_file(texts):
 
     Args:
         texts (list): List of extracted text strings.
+            Example: ["Page 1 text", "Page 2 text", ...]
 
     Returns:
         BytesIO: In-memory Excel file ready for download.
@@ -99,6 +101,7 @@ def create_word_file(texts):
 
     Args:
         texts (list): List of extracted text strings.
+            Example: ["Page 1 text", "Page 2 text", ...]
 
     Returns:
         BytesIO: In-memory Word document ready for download.
@@ -122,102 +125,89 @@ def create_word_file(texts):
     return output
 
 
-def extract_tables_from_images_with_paddle(images):
+def extract_tables_from_images_with_tesseract(images):
     """
-    Extracts tables from a list of images using PaddleOCR's PP‑Structure module.
-
+    Extracts table-like data from images using Tesseract's TSV output.
+    For each image, the Tesseract TSV (data) output is returned as a pandas DataFrame.
+    (This DataFrame includes details like bounding boxes, confidence, and recognized text.)
+    
     Args:
         images (list): List of PIL.Image objects.
+            Example: [PIL.Image.Image, PIL.Image.Image, ...]
 
     Returns:
-        list: A list of pandas DataFrames, each representing an extracted table.
+        list: A list of pandas DataFrames, one per image (page).
     """
-    try:
-        from paddleocr import PPStructure
-    except ImportError:
-        st.error("PaddleOCR PP‑Structure module not found. Ensure both 'paddleocr' and 'paddlepaddle' are installed.")
-        return []
-
-    # Initialize PP‑Structure for table extraction.
-    table_engine = PPStructure(show_log=True)
-    all_tables = []
+    tables = []
     for idx, image in enumerate(images, start=1):
         try:
-            result = table_engine(image)
-            # The result is expected to be a dictionary with a "result" key containing detected tables.
-            tables_in_page = result.get("result", [])
-            for table in tables_in_page:
-                if "structure_result" in table:
-                    # Convert the structure result (list of rows) into a DataFrame.
-                    df = pd.DataFrame(table["structure_result"])
-                    all_tables.append(df)
-                elif "cell" in table:
-                    df = pd.DataFrame(table["cell"])
-                    all_tables.append(df)
-            logging.info("Extracted %d table(s) from page %d using PaddleOCR.", len(tables_in_page), idx)
+            # Get the OCR data as a DataFrame
+            df = pytesseract.image_to_data(image, output_type=Output.DATAFRAME)
+            # Optionally filter out rows with empty text
+            df = df[df['text'].notna() & (df['text'] != "")]
+            logging.info("Extracted TSV data for page %d with %d rows.", idx, len(df))
+            tables.append(df)
         except Exception as e:
-            logging.error("Error extracting tables from page %d: %s", idx, e)
-    return all_tables
+            logging.error("Error extracting TSV data from page %d: %s", idx, e)
+    return tables
 
 
 # --- Streamlit User Interface ---
 
-st.title("PDF Converter & Table Extractor (PaddleOCR)")
-st.write("Upload a PDF and select an export option.")
+st.title("PDF Converter & Table Extractor (Tesseract)")
+st.write("Upload a scanned PDF and select an export option.")
 
 # File uploader accepts only PDF files.
 uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
 
 # Radio button to select export format.
-export_format = st.radio("Select Export Format", ("Excel", "Word", "Tables"))
+export_format = st.radio("Select Export Format", ("Excel", "Word", "Tables (Tesseract)"))
 
-# Optional: Specify Poppler path if needed (e.g., on Windows, set to r'C:\poppler\bin').
+# Optional: Specify the Poppler path if needed (e.g., on Windows, set to r'C:\poppler\bin').
 poppler_path = None
 
 if uploaded_pdf is not None:
-    if export_format == "Tables":
-        with st.spinner("Extracting tables from PDF using PaddleOCR..."):
-            # Convert PDF pages to images.
-            images = convert_pdf_to_images(uploaded_pdf, poppler_path=poppler_path)
-            if images:
-                tables = extract_tables_from_images_with_paddle(images)
-                if tables:
-                    st.success(f"Extracted {len(tables)} table(s) from the PDF.")
-                    for idx, table in enumerate(tables, start=1):
-                        st.write(f"### Table {idx}")
-                        st.dataframe(table)
-                        csv_data = table.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label=f"Download Table {idx} as CSV",
-                            data=csv_data,
-                            file_name=f"table_{idx}.csv",
-                            mime="text/csv"
-                        )
-                else:
-                    st.error("No tables were extracted from the PDF using PaddleOCR.")
-            else:
-                st.error("No images found in the PDF file. Check if the PDF is valid.")
+    with st.spinner("Processing PDF..."):
+        # Convert PDF pages to images.
+        images = convert_pdf_to_images(uploaded_pdf, poppler_path=poppler_path)
+    
+    if not images:
+        st.error("No images found in the PDF file. Check if the PDF is valid.")
     else:
-        with st.spinner("Processing PDF for OCR extraction..."):
-            images = convert_pdf_to_images(uploaded_pdf, poppler_path=poppler_path)
-            if images:
-                extracted_texts = extract_text_from_images(images)
-                st.success("Text extraction complete.")
-                if export_format == "Excel":
-                    excel_file = create_excel_file(extracted_texts)
+        if export_format == "Tables (Tesseract)":
+            with st.spinner("Extracting table data via Tesseract TSV output..."):
+                table_dfs = extract_tables_from_images_with_tesseract(images)
+            if table_dfs:
+                st.success(f"Extracted table data from {len(table_dfs)} page(s).")
+                for idx, table_df in enumerate(table_dfs, start=1):
+                    st.write(f"### Page {idx} TSV Data")
+                    st.dataframe(table_df)
+                    csv_data = table_df.to_csv(index=False).encode("utf-8")
                     st.download_button(
-                        label="Download Excel File",
-                        data=excel_file,
-                        file_name="extracted_text.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                elif export_format == "Word":
-                    word_file = create_word_file(extracted_texts)
-                    st.download_button(
-                        label="Download Word Document",
-                        data=word_file,
-                        file_name="extracted_text.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        label=f"Download Page {idx} Data as CSV",
+                        data=csv_data,
+                        file_name=f"page_{idx}_table_data.csv",
+                        mime="text/csv"
                     )
             else:
-                st.error("No images found in the PDF file. Check if the PDF is valid.")
+                st.error("No table-like data could be extracted from the PDF using Tesseract.")
+        else:
+            with st.spinner("Extracting OCR text from PDF images..."):
+                extracted_texts = extract_text_from_images(images)
+            st.success("Text extraction complete.")
+            if export_format == "Excel":
+                excel_file = create_excel_file(extracted_texts)
+                st.download_button(
+                    label="Download Excel File",
+                    data=excel_file,
+                    file_name="extracted_text.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            elif export_format == "Word":
+                word_file = create_word_file(extracted_texts)
+                st.download_button(
+                    label="Download Word Document",
+                    data=word_file,
+                    file_name="extracted_text.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )

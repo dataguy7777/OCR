@@ -5,6 +5,7 @@ import re
 import pandas as pd
 import tempfile
 import subprocess
+import base64
 
 from pdf2image import convert_from_bytes
 import pytesseract
@@ -12,7 +13,6 @@ from pytesseract import Output
 from docx import Document
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from PIL import Image, ImageDraw
-import base64
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -149,7 +149,7 @@ def process_pdf_with_ocrmypdf(pdf_file):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_out:
             out_path = temp_out.name
 
-        # Run OCRmyPDF with --force-ocr to force OCR even if pages already have text.
+        # Run OCRmyPDF with --force-ocr to force OCR on every page.
         result = subprocess.run(
             ["ocrmypdf", "--force-ocr", in_path, out_path],
             capture_output=True, text=True, check=True
@@ -170,10 +170,35 @@ def process_pdf_with_ocrmypdf(pdf_file):
         return None
 
 
+# --- NEW: Semantic Chunking using LlamaIndex ---
+
+def get_semantic_chunks(text, chunk_size=512, chunk_overlap=50):
+    """
+    Splits the input text into semantic chunks using LlamaIndex's RecursiveCharacterTextSplitter.
+    Returns a list of text chunks.
+    """
+    try:
+        from llama_index import RecursiveCharacterTextSplitter
+    except ImportError:
+        st.error("LlamaIndex is not installed. Please install it via 'pip install llama-index'")
+        return []
+
+    try:
+        splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        chunks = splitter.split_text(text)
+        return chunks
+    except Exception as e:
+        st.error("Error during semantic chunking: " + str(e))
+        return []
+
+
 # --- Streamlit User Interface ---
 
 st.title("PDF Converter & Table Extractor")
-st.write("Upload a scanned PDF. Two output tabs are available: one showing detected content with red bounding boxes (with export options) and another showing an OCR-enhanced searchable PDF produced by OCRmyPDF.")
+st.write("Upload a scanned PDF. Three output tabs are available:\n\n"
+         "1. **Detected Content** – Shows previews with red bounding boxes and export options.\n"
+         "2. **OCRmyPDF Output** – Provides a searchable PDF produced by OCRmyPDF.\n"
+         "3. **Semantic Chunks** – Displays semantic chunks (based on token/character count) parsed from the OCR text using LlamaIndex.")
 
 # File uploader (PDF only)
 uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
@@ -196,8 +221,12 @@ if uploaded_pdf is not None:
         with st.spinner("Running OCRmyPDF on the uploaded PDF..."):
             ocr_pdf = process_pdf_with_ocrmypdf(pdf_for_ocr)
 
-        # Create two output tabs.
-        tabs = st.tabs(["Detected Content", "OCRmyPDF Output"])
+        # Extract OCR text from images once for later use.
+        with st.spinner("Extracting OCR text from PDF images..."):
+            extracted_texts = extract_text_from_images(images)
+
+        # Create three output tabs.
+        tabs = st.tabs(["Detected Content", "OCRmyPDF Output", "Semantic Chunks"])
 
         with tabs[0]:
             st.subheader("Detected Content with Red Bounding Boxes")
@@ -206,7 +235,7 @@ if uploaded_pdf is not None:
                     preview_img = draw_bounding_boxes_on_image(img.copy())
                     st.image(preview_img, caption=f"Page {idx}", use_column_width=True)
 
-            export_format = st.radio("Select Export Format", ("Excel", "Word", "Tables (Tesseract)"))
+            export_format = st.radio("Select Export Format", ("Excel", "Word", "Tables (Tesseract)"), key="export_format")
             if export_format == "Tables (Tesseract)":
                 with st.spinner("Extracting table data via Tesseract TSV output..."):
                     table_dfs = extract_tables_from_images_with_tesseract(images)
@@ -225,25 +254,26 @@ if uploaded_pdf is not None:
                 else:
                     st.error("No table-like data could be extracted using Tesseract TSV output.")
             else:
-                with st.spinner("Extracting OCR text from PDF images..."):
-                    extracted_texts = extract_text_from_images(images)
-                st.success("Text extraction complete.")
-                if export_format == "Excel":
-                    excel_file = create_excel_file(extracted_texts)
-                    st.download_button(
-                        label="Download Excel File",
-                        data=excel_file,
-                        file_name="extracted_text.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                elif export_format == "Word":
-                    word_file = create_word_file(extracted_texts)
-                    st.download_button(
-                        label="Download Word Document",
-                        data=word_file,
-                        file_name="extracted_text.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
+                if extracted_texts:
+                    st.success("OCR text extraction complete.")
+                    if export_format == "Excel":
+                        excel_file = create_excel_file(extracted_texts)
+                        st.download_button(
+                            label="Download Excel File",
+                            data=excel_file,
+                            file_name="extracted_text.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                    elif export_format == "Word":
+                        word_file = create_word_file(extracted_texts)
+                        st.download_button(
+                            label="Download Word Document",
+                            data=word_file,
+                            file_name="extracted_text.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
+                else:
+                    st.error("No OCR text was extracted from the PDF images.")
 
         with tabs[1]:
             st.subheader("OCRmyPDF Processed PDF (Searchable)")
@@ -256,9 +286,8 @@ if uploaded_pdf is not None:
                     mime="application/pdf"
                 )
                 try:
-                    import base64
+                    # Embed the PDF using an <object> tag.
                     b64_pdf = base64.b64encode(ocr_pdf).decode("utf-8")
-                    # Using an <object> tag instead of <iframe>
                     pdf_display = f'<object data="data:application/pdf;base64,{b64_pdf}" type="application/pdf" width="700" height="900"></object>'
                     st.markdown(pdf_display, unsafe_allow_html=True)
                 except Exception as e:
@@ -266,3 +295,20 @@ if uploaded_pdf is not None:
             else:
                 st.error("OCRmyPDF processing failed.")
 
+        with tabs[2]:
+            st.subheader("Semantic Chunks from OCR Text using LlamaIndex")
+            if not extracted_texts or all(text.strip() == "" for text in extracted_texts):
+                st.error("No OCR text available for semantic chunking.")
+            else:
+                full_text = "\n\n".join(extracted_texts)
+                # Use LlamaIndex's RecursiveCharacterTextSplitter to split text.
+                chunks = get_semantic_chunks(full_text, chunk_size=512, chunk_overlap=50)
+                if chunks:
+                    st.success(f"Extracted {len(chunks)} semantic chunks.")
+                    for i, chunk in enumerate(chunks, start=1):
+                        # Approximate token count: here we use word count as a rough proxy.
+                        token_count = len(chunk.split())
+                        st.write(f"**Chunk {i}** (approx. {token_count} tokens):")
+                        st.text_area("", chunk, height=150)
+                else:
+                    st.error("No semantic chunks could be extracted.")

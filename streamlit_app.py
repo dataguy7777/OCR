@@ -135,11 +135,14 @@ def draw_bounding_boxes_on_image(image, conf_threshold=60):
 def process_pdf_with_ocrmypdf(pdf_file):
     """
     Processes the PDF with OCRmyPDF to add an OCR text layer (making it searchable).
-    Uses subprocess to call the 'ocrmypdf' command with the --skip-unpaper flag.
+    Uses subprocess to call the 'ocrmypdf' command.
     Returns the processed PDF as bytes, or None if processing fails.
+    
+    Note: The '--skip-unpaper' flag has been removed since it is not supported
+    by your current version of OCRmyPDF.
     """
     try:
-        # Save the uploaded PDF to a temporary input file.
+        # Write the uploaded PDF to a temporary input file.
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_in:
             temp_in.write(pdf_file.read())
             in_path = temp_in.name
@@ -148,8 +151,8 @@ def process_pdf_with_ocrmypdf(pdf_file):
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_out:
             out_path = temp_out.name
 
-        # Run OCRmyPDF with --skip-unpaper to avoid unpaper-related issues.
-        result = subprocess.run(["ocrmypdf", "--skip-unpaper", in_path, out_path],
+        # Run OCRmyPDF without the --skip-unpaper flag.
+        result = subprocess.run(["ocrmypdf", in_path, out_path],
                                 capture_output=True, text=True, check=True)
         logging.info("OCRmyPDF output: %s", result.stdout)
 

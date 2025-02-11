@@ -2,11 +2,11 @@ import streamlit as st
 import logging
 import io
 import re
+import os
 import pandas as pd
 import tempfile
 import subprocess
 import base64
-import llama_index
 
 from pdf2image import convert_from_bytes
 import pytesseract
@@ -14,14 +14,24 @@ from pytesseract import Output
 from docx import Document
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from PIL import Image, ImageDraw
-from llama_index import RecursiveCharacterTextSplitter
+from llama_index import RecursiveCharacterTextSplitter  # Single import
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-def convert_pdf_to_images(pdf_file, poppler_path=None):
+def convert_pdf_to_images(pdf_file: io.BytesIO, poppler_path: str = None) -> list:
     """
     Converts a PDF file (as a BytesIO stream) into a list of image objects.
+
+    Args:
+        pdf_file (io.BytesIO): The input PDF file stream.
+        poppler_path (str, optional): Path to the Poppler binaries (if required). 
+            Example (Windows): r'C:\poppler\bin'.
+
+    Returns:
+        list: A list of PIL.Image objects representing each PDF page.
+            Example: [Image object (Page 1), Image object (Page 2), ...]
     """
     try:
         pdf_file.seek(0)
@@ -35,9 +45,17 @@ def convert_pdf_to_images(pdf_file, poppler_path=None):
         return []
 
 
-def extract_text_from_images(images):
+def extract_text_from_images(images: list) -> list:
     """
     Extracts full-page text from a list of image objects using Tesseract OCR.
+
+    Args:
+        images (list): List of PIL.Image objects.
+            Example: [Image object (Page 1), Image object (Page 2), ...]
+
+    Returns:
+        list: List of text strings extracted from each image.
+            Example: ["Text from page 1", "Text from page 2", ...]
     """
     texts = []
     for idx, image in enumerate(images, start=1):
@@ -51,11 +69,19 @@ def extract_text_from_images(images):
     return texts
 
 
-def create_excel_file(texts):
+def create_excel_file(texts: list) -> io.BytesIO:
     """
     Creates an Excel file from a list of text strings after cleaning illegal characters.
+
+    Args:
+        texts (list): List of text strings.
+            Example: ["Text for page 1", "Text for page 2", ...]
+
+    Returns:
+        io.BytesIO: A BytesIO stream containing the Excel file.
+            Example: BytesIO stream for 'extracted_text.xlsx'
     """
-    def clean_text(text):
+    def clean_text(text: str) -> str:
         return re.sub(ILLEGAL_CHARACTERS_RE, "", text) if text else text
 
     cleaned_texts = [clean_text(text) for text in texts]
@@ -75,9 +101,17 @@ def create_excel_file(texts):
     return output
 
 
-def create_word_file(texts):
+def create_word_file(texts: list) -> io.BytesIO:
     """
     Creates a Word document from a list of text strings.
+
+    Args:
+        texts (list): List of text strings.
+            Example: ["Text for page 1", "Text for page 2", ...]
+
+    Returns:
+        io.BytesIO: A BytesIO stream containing the Word document.
+            Example: BytesIO stream for 'extracted_text.docx'
     """
     document = Document()
     for idx, text in enumerate(texts, start=1):
@@ -98,10 +132,18 @@ def create_word_file(texts):
     return output
 
 
-def extract_tables_from_images_with_tesseract(images):
+def extract_tables_from_images_with_tesseract(images: list) -> list:
     """
     Extracts table-like data from images using Tesseract's TSV output.
     For each image, returns a pandas DataFrame of the TSV data.
+
+    Args:
+        images (list): List of PIL.Image objects.
+            Example: [Image object (Page 1), Image object (Page 2), ...]
+
+    Returns:
+        list: A list of pandas DataFrame objects containing TSV data.
+            Example: [DataFrame for page 1, DataFrame for page 2, ...]
     """
     tables = []
     for idx, image in enumerate(images, start=1):
@@ -115,10 +157,20 @@ def extract_tables_from_images_with_tesseract(images):
     return tables
 
 
-def draw_bounding_boxes_on_image(image, conf_threshold=60):
+def draw_bounding_boxes_on_image(image: Image.Image, conf_threshold: int = 60) -> Image.Image:
     """
     Draws red bounding boxes on an image around detected text regions (using Tesseract).
     Only boxes with confidence above the threshold are drawn.
+
+    Args:
+        image (PIL.Image): The input image.
+            Example: PIL.Image.open("page1.png")
+        conf_threshold (int, optional): Confidence threshold. Defaults to 60.
+            Example: 60
+
+    Returns:
+        PIL.Image: The image with red bounding boxes.
+            Example: Modified image with boxes around text.
     """
     draw = ImageDraw.Draw(image)
     data = pytesseract.image_to_data(image, output_type=Output.DICT)
@@ -126,7 +178,7 @@ def draw_bounding_boxes_on_image(image, conf_threshold=60):
     for i in range(n_boxes):
         try:
             conf = int(data['conf'][i])
-        except ValueError:
+        except (ValueError, TypeError):
             conf = 0
         if conf > conf_threshold:
             x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
@@ -134,21 +186,33 @@ def draw_bounding_boxes_on_image(image, conf_threshold=60):
     return image
 
 
-def process_pdf_with_ocrmypdf(pdf_file):
+def process_pdf_with_ocrmypdf(pdf_file: io.BytesIO) -> bytes:
     """
     Processes the PDF with OCRmyPDF to add an OCR text layer (making it searchable).
     Uses subprocess to call the 'ocrmypdf' command with the --force-ocr flag.
-    Returns the processed PDF as bytes, or None if processing fails.
+    Cleans up temporary files after processing.
+
+    Args:
+        pdf_file (io.BytesIO): The input PDF file stream.
+            Example: io.BytesIO(open("scanned.pdf", "rb").read())
+
+    Returns:
+        bytes: The processed PDF as bytes, or None if processing fails.
+            Example: b'%PDF-1.4 ...'
     """
+    in_path = None
+    out_path = None
     try:
         # Write the uploaded PDF to a temporary input file.
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_in:
             temp_in.write(pdf_file.read())
             in_path = temp_in.name
+        logging.info("Temporary input file created: %s", in_path)
 
         # Create a temporary output file.
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_out:
             out_path = temp_out.name
+        logging.info("Temporary output file created: %s", out_path)
 
         # Run OCRmyPDF with --force-ocr to force OCR on every page.
         result = subprocess.run(
@@ -169,21 +233,33 @@ def process_pdf_with_ocrmypdf(pdf_file):
         logging.error("Error running OCRmyPDF: %s", e)
         st.error("Failed to process PDF with OCRmyPDF.")
         return None
+    finally:
+        # Cleanup temporary files
+        if in_path and os.path.exists(in_path):
+            os.remove(in_path)
+            logging.info("Temporary input file removed: %s", in_path)
+        if out_path and os.path.exists(out_path):
+            os.remove(out_path)
+            logging.info("Temporary output file removed: %s", out_path)
 
 
-# --- NEW: Semantic Chunking using LlamaIndex ---
-
-def get_semantic_chunks(text, chunk_size=512, chunk_overlap=50):
+def get_semantic_chunks(text: str, chunk_size: int = 512, chunk_overlap: int = 50) -> list:
     """
     Splits the input text into semantic chunks using LlamaIndex's RecursiveCharacterTextSplitter.
     Returns a list of text chunks.
-    """
-    try:
-        from llama_index import RecursiveCharacterTextSplitter
-    except ImportError:
-        st.error("LlamaIndex is not installed. Please install it via 'pip install llama-index'")
-        return []
 
+    Args:
+        text (str): The input text.
+            Example: "This is a long text from OCR..."
+        chunk_size (int, optional): Maximum size of each chunk. Defaults to 512.
+            Example: 512
+        chunk_overlap (int, optional): Overlap between consecutive chunks. Defaults to 50.
+            Example: 50
+
+    Returns:
+        list: A list of text chunks.
+            Example: ["Chunk 1 text...", "Chunk 2 text...", ...]
+    """
     try:
         splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         chunks = splitter.split_text(text)
@@ -196,10 +272,12 @@ def get_semantic_chunks(text, chunk_size=512, chunk_overlap=50):
 # --- Streamlit User Interface ---
 
 st.title("PDF Converter & Table Extractor")
-st.write("Upload a scanned PDF. Three output tabs are available:\n\n"
-         "1. **Detected Content** – Shows previews with red bounding boxes and export options.\n"
-         "2. **OCRmyPDF Output** – Provides a searchable PDF produced by OCRmyPDF.\n"
-         "3. **Semantic Chunks** – Displays semantic chunks (based on token/character count) parsed from the OCR text using LlamaIndex.")
+st.write(
+    "Upload a scanned PDF. Three output tabs are available:\n\n"
+    "1. **Detected Content** – Shows previews with red bounding boxes and export options.\n"
+    "2. **OCRmyPDF Output** – Provides a searchable PDF produced by OCRmyPDF.\n"
+    "3. **Semantic Chunks** – Displays semantic chunks (based on token/character count) parsed from the OCR text using LlamaIndex."
+)
 
 # File uploader (PDF only)
 uploaded_pdf = st.file_uploader("Upload a PDF file", type=["pdf"])
@@ -218,11 +296,11 @@ if uploaded_pdf is not None:
     if not images:
         st.error("No images found in the PDF file. Check if the PDF is valid.")
     else:
-        # Process the PDF with OCRmyPDF in parallel.
+        # Process the PDF with OCRmyPDF.
         with st.spinner("Running OCRmyPDF on the uploaded PDF..."):
             ocr_pdf = process_pdf_with_ocrmypdf(pdf_for_ocr)
 
-        # Extract OCR text from images once for later use.
+        # Extract OCR text from images.
         with st.spinner("Extracting OCR text from PDF images..."):
             extracted_texts = extract_text_from_images(images)
 
@@ -302,12 +380,10 @@ if uploaded_pdf is not None:
                 st.error("No OCR text available for semantic chunking.")
             else:
                 full_text = "\n\n".join(extracted_texts)
-                # Use LlamaIndex's RecursiveCharacterTextSplitter to split text.
                 chunks = get_semantic_chunks(full_text, chunk_size=512, chunk_overlap=50)
                 if chunks:
                     st.success(f"Extracted {len(chunks)} semantic chunks.")
                     for i, chunk in enumerate(chunks, start=1):
-                        # Approximate token count: here we use word count as a rough proxy.
                         token_count = len(chunk.split())
                         st.write(f"**Chunk {i}** (approx. {token_count} tokens):")
                         st.text_area("", chunk, height=150)

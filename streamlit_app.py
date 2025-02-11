@@ -14,7 +14,7 @@ from pytesseract import Output
 from docx import Document
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from PIL import Image, ImageDraw
-from llama_index import RecursiveCharacterTextSplitter  # Single import
+from llama_index.text_splitter import RecursiveCharacterTextSplitter  # Single import
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
